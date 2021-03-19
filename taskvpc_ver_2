@@ -1,0 +1,198 @@
+#!/bin/bash
+
+#VPC
+
+	#Create VPC
+VPCid=`aws ec2 create-vpc \
+ --cidr-block 192.168.0.0/24 \
+  | jq '.Vpc.VpcId' | tr -d '"'`
+
+	#Create name for vpc
+aws ec2 create-tags \
+ --resources $VPCid \
+ --tags Key=Name,Value="VPC for task"
+ 
+#Subnets
+
+	#Public
+Public_SubnetID=`aws ec2 create-subnet \
+ --cidr-block 192.168.0.0/25 \
+ --availability-zone us-east-2a \
+ --vpc-id $VPCid \
+  | jq '.Subnet.SubnetId' | tr -d '"'`
+	
+	#name for public Subnet
+aws ec2 create-tags \
+ --resources $Public_SubnetID \
+ --tags Key=Name,Value="Public Subnet"
+ 
+	#Private
+Private_SubnetID=`aws ec2 create-subnet \
+ --cidr-block 192.168.0.128/25 \
+ --availability-zone us-east-2b \
+ --vpc-id $VPCid \
+  | jq '.Subnet.SubnetId' | tr -d '"'`
+ 
+ 	#name for private Subnet
+aws ec2 create-tags \
+ --resources $Private_SubnetID \
+ --tags Key=Name,Value="Private Subnet"
+ 
+#Internet Gatway
+	
+	#Create gatway
+GwId=`aws ec2 create-internet-gateway \
+  | jq '.InternetGateway.InternetGatewayId' | tr -d '"'`
+ 
+	#name the Internet gateway
+aws ec2 create-tags \
+ --resources $GwId \
+ --tags Key=Name,Value="Internet gateway for task"
+	
+	#attach gateway to vpc
+aws ec2 attach-internet-gateway \
+ --internet-gateway-id $GwId \
+ --vpc-id $VPCid
+ 
+#Route table
+
+	#Create route table for public subnet
+Public_RouteTableId=`aws ec2 describe-route-tables \
+ --filters Name=vpc-id,Values=$VPCid \
+  | jq '.RouteTables[].RouteTableId' | tr -d '"'`
+	
+	#name public route table
+aws ec2 create-tags \
+ --resources $Public_RouteTableId \
+ --tags Key=Name,Value="Public Table"
+
+	#add route to public subnet
+aws ec2 associate-route-table \
+ --subnet-id $Public_SubnetID \
+ --route-table-id $Public_RouteTableId
+
+	#add route for the internet gateway
+aws ec2 create-route \
+ --route-table-id $Public_RouteTableId \
+ --destination-cidr-block 0.0.0.0/0 \
+ --gateway-id $GwId
+
+	#Create route table for private subnet
+Private_RouteTableId=`aws ec2 create-route-table \
+ --vpc-id $VPCid \
+  | jq '.RouteTable.RouteTableId' | tr -d '"'`
+	
+	#name private route table
+aws ec2 create-tags \
+ --resources $Private_RouteTableId \
+ --tags Key=Name,Value="Private Table"
+ 
+ 	#add route to private subnet
+aws ec2 associate-route-table \
+ --subnet-id $Private_SubnetID \
+ --route-table-id $Private_RouteTableId
+ 
+#Instances
+	
+	#Public Instance
+	
+	#Security group for public instance
+BSecgroupId=`aws ec2 create-security-group \
+ --vpc-id $VPCid \
+ --group-name pigeon \
+ --description "Security group for public instance" | awk -F'"' '{print$4}'`
+
+ 	#rule for security group
+aws ec2 authorize-security-group-ingress \
+ --group-id $BSecgroupId \
+ --protocol tcp --port 22 \
+ --cidr ************
+ 
+	#Create public instance
+BustionId=`aws ec2 run-instances --image-id ami-08962a4068733a2b6 \
+ --count 1 --instance-type t2.micro \
+ --key-name 2vn --security-group-ids $BSecgroupId \
+ --subnet-id $Public_SubnetID \
+ --associate-public-ip-address \
+  | jq '.Instances[].InstanceId' | tr -d '"'`
+ 	
+ 	#name public instance
+aws ec2 create-tags \
+ --resources $BustionId \
+ --tags Key=Name,Value="Public instance"
+
+	#Private Ip for Public instance	
+BustionIp=`aws ec2 describe-instances \
+ --instance-ids $BustionId \
+  | jq '.Reservations[].Instances[].PrivateIpAddress ' | tr -d '"'`
+ 	 
+	#Private Instance
+
+	#Security group for private instance
+PrSecgroupId=`aws ec2 create-security-group \
+ --vpc-id $VPCid \
+ --group-name transformer \
+ --description "Securitygroup for private instance" | awk -F'"' '{print$4}'`
+  	
+	#rule for security group
+mask='/25'
+Ip=$BustionIp$mask
+aws ec2 authorize-security-group-ingress \
+ --group-id $PrSecgroupId \
+ --protocol tcp --port 22 \
+ --cidr $Ip
+ 
+ 	#Create private instance
+PrInstanceId=`aws ec2 run-instances --image-id ami-08962a4068733a2b6 \
+ --count 1 --instance-type t2.micro \
+ --key-name 2vn --security-group-ids $PrSecgroupId \
+ --subnet-id $Private_SubnetID \
+  | jq '.Instances[].InstanceId' | tr -d '"'`
+
+ 	#name public instance
+aws ec2 create-tags \
+ --resources $PrInstanceId \
+ --tags Key=Name,Value="Private instance"
+ 
+	#Show ip for created instances
+	
+	#Public instance
+echo "	Public instance:"
+echo "Private ip:$BustionIp"
+BustionIp2=`aws ec2 describe-instances \
+ --instance-ids $BustionId \
+  | jq '.Reservations[].Instances[].PublicIpAddress' | tr -d '"'`
+echo "Public instance:$BustionIp2"
+	
+	#Private instance
+echo "	Private instance"
+PrInstanceIp=`aws ec2 describe-instances \
+ --instance-ids $PrInstanceId \
+  | jq '.Reservations[].Instances[].PrivateIpAddress' | tr -d '"'`
+echo "Private ip:$PrInstanceIp"
+
+#Provide Internet access to the Private instance
+	
+	#Create Elastic Ip
+EIPid=`aws ec2 allocate-address --domain vpc | jq '.AllocationId' | tr -d '"'`
+	
+	#Create Nat gateway
+NatId=`aws ec2 create-nat-gateway \
+ --subnet-id $Public_SubnetID \
+ --allocation-id $EIPid | jq '.NatGateway.NatGatewayId' | tr -d '"'`
+ 	
+ 	#name for Nat
+aws ec2 create-tags \
+ --resources $NatId \
+ --tags Key=Name,Value="NAT for my VPC"
+ 	
+ 	#check if nat gateway is available
+aws ec2 wait nat-gateway-available \
+    --nat-gateway-ids $NatId 
+
+	#add route to Nat gateway for private subnet
+aws ec2 create-route \
+ --route-table-id $Private_RouteTableId \
+ --destination-cidr-block 0.0.0.0/0 \
+ --gateway-id $NatId
+	

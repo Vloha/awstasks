@@ -1,0 +1,38 @@
+#!/bin/bash
+
+#create group
+id=`aws ec2 create-security-group \
+ --group-name torpeda \
+ --description "first torpeda"  \
+ --vpc-id vpc-92209ef9 | awk -F'"' '{print$4}'`
+
+#modify security group
+#ssh
+aws ec2 authorize-security-group-ingress \
+ --group-id $id \
+ --protocol tcp \
+ --port 22 \
+ --cidr ************
+
+#http
+aws ec2 authorize-security-group-ingress \
+ --group-id $id \
+ --protocol tcp \
+ --port 80 \
+ --cidr ************
+
+#create ec2
+insid=`aws ec2 run-instances \
+ --image-id ami-08962a4068733a2b6 \
+ --count 1 \
+ --instance-type t2.micro \
+ --key-name 2vn \
+ --security-group-ids $id \
+ --subnet-id subnet-d0c667bb \
+ --user-data file://bash.txt  | awk -F'"' '{print$14}'`
+
+#take Public IP
+#sleep 1m
+#aws ec2 describe-instances --instance-ids $insid --query 'Reservations[].Instances[].PublicIpAddress' 
+
+
